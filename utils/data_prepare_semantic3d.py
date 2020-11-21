@@ -1,0 +1,113 @@
+from sklearn.neighbors import KDTree
+from os.path import join, exists, dirname, abspath
+import numpy as np
+import os, glob, pickle
+import sys
+
+BASE_DIR = dirname(abspath(__file__))
+ROOT_DIR = dirname(BASE_DIR)
+sys.path.append(BASE_DIR)
+sys.path.append(ROOT_DIR)
+from helper_ply import write_ply
+from helper_tool import DataProcessing as DP
+
+grid_size = 0.06
+#dataset_path = '/data/semantic3d/original_data'
+#dataset_path = '/media/peterzhu/DATA/data/semantic3d/original_data'
+dataset_path = '/data/semantic3d_yu/original_data'
+original_pc_folder = join(dirname(dataset_path), 'original_ply')
+sub_pc_folder = join(dirname(dataset_path), 'input_{:.3f}'.format(grid_size))
+os.mkdir(original_pc_folder) if not exists(original_pc_folder) else None
+os.mkdir(sub_pc_folder) if not exists(sub_pc_folder) else None
+
+print("original_pc_folder: " + original_pc_folder)
+print("sub_pc_folder: " + sub_pc_folder)
+
+#dataset_path '/media/peterzhu/DATA/data/semantic3d/original_data'
+#original_pc_folder '/media/peterzhu/DATA/data/semantic3d/original_ply'
+#sub_pc_folder '/media/peterzhu/DATA/data/semantic3d/input_0.06'
+
+for pc_path in sorted(glob.glob(join(dataset_path, '*.txt'))):
+    print(pc_path)
+    file_name = pc_path.split('/')[-1][:-4]
+
+    # check if it has already calculated
+    if exists(join(sub_pc_folder, file_name + '_KDTree.pkl')):
+        continue
+
+    pc = DP.load_pc_semantic3d(pc_path)
+    pc_copy = np.array(pc)
+    print(pc_copy.shape)
+    print(pc_copy.min())
+    print(pc_copy.max())
+    # check if label exists
+    label_path = pc_path[:-4] + '.labels'
+
+    if exists(label_path):
+        labels = DP.load_label_semantic3d(label_path)
+        full_ply_path = join(original_pc_folder, file_name + '.ply')
+
+        #  Subsample to save space
+        sub_points, sub_colors, sub_labels = DP.grid_sub_sampling(pc[:, :3].astype(np.float32),
+                                                                  pc[:, 4:7].astype(np.uint8), labels, 0.01)
+        print(np.array(sub_points).shape)
+        print(np.array(sub_colors).shape)
+        print(np.array(sub_labels).shape)
+        print("sub_points min:" + str(sub_points.min()))
+        print("sub_points max:" + str(sub_points.max()))
+
+        sub_labels = np.squeeze(sub_labels)
+        #Directory
+        print("writing FULL ply files    *****Start*****")
+        write_ply(full_ply_path, (sub_points, sub_colors, sub_labels), ['x', 'y', 'z', 'red', 'green', 'blue', 'class'])
+        print("writing FULL ply files    *****End*****")
+
+        # save sub_cloud and KDTree file
+        sub_xyz, sub_colors, sub_labels = DP.grid_sub_sampling(sub_points, sub_colors, sub_labels, grid_size)
+        sub_colors = sub_colors / 255.0
+        sub_labels = np.squeeze(sub_labels)
+        sub_ply_file = join(sub_pc_folder, file_name + '.ply')
+        print("writing ply files    *****Start*****")
+        write_ply(sub_ply_file, [sub_xyz, sub_colors, sub_labels], ['x', 'y', 'z', 'red', 'green', 'blue', 'class'])
+        print("writing ply files *****End*****")
+
+        search_tree = KDTree(sub_xyz, leaf_size=50)
+        kd_tree_file = join(sub_pc_folder, file_name + '_KDTree.pkl')
+        print("writing KDTree files *****Start*****")
+        with open(kd_tree_file, 'wb') as f:
+            pickle.dump(search_tree, f, protocol=4)
+            #pickle.dump(search_tree, f)
+        print("writing KDTree files *****End*****")
+
+        proj_idx = np.squeeze(search_tree.query(sub_points, return_distance=False))
+        proj_idx = proj_idx.astype(np.int32)
+        proj_save = join(sub_pc_folder, file_name + '_proj.pkl')
+        print("writing Proj files *****Start*****")
+        with open(proj_save, 'wb') as f:
+             pickle.dump([proj_idx, labels], f, protocol=4)
+            #pickle.dump([proj_idx, labels], f)
+        print("writing Proj files *****End*****")
+
+    else:
+        full_ply_path = join(original_pc_folder, file_name + '.ply')
+        write_ply(full_ply_path, (pc[:, :3].astype(np.float32), pc[:, 4:7].astype(np.uint8)),
+                  ['x', 'y', 'z', 'red', 'green', 'blue'])
+
+        # save sub_cloud and KDTree file
+        sub_xyz, sub_colors = DP.grid_sub_sampling(pc[:, :3].astype(np.float32), pc[:, 4:7].astype(np.uint8),
+                                                   grid_size=grid_size)
+        sub_colors = sub_colors / 255.0
+        sub_ply_file = join(sub_pc_folder, file_name + '.ply')
+        write_ply(sub_ply_file, [sub_xyz, sub_colors], ['x', 'y', 'z', 'red', 'green', 'blue'])
+        labels = np.zeros(pc.shape[0], dtype=np.uint8)
+
+        search_tree = KDTree(sub_xyz, leaf_size=50)
+        kd_tree_file = join(sub_pc_folder, file_name + '_KDTree.pkl')
+        with open(kd_tree_file, 'wb') as f:
+            pickle.dump(search_tree, f)
+
+        proj_idx = np.squeeze(search_tree.query(pc[:, :3].astype(np.float32), return_distance=False))
+        proj_idx = proj_idx.astype(np.int32)
+        proj_save = join(sub_pc_folder, file_name + '_proj.pkl')
+        with open(proj_save, 'wb') as f:
+            pickle.dump([proj_idx, labels], f)
